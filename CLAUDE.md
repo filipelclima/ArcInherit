@@ -30,6 +30,16 @@ Vault de herança onchain para tokens ERC-20 na Arc Network. Owner deposita toke
 4. **Manter dependências fixadas em versões exatas** (sem `^` ou `~`) ao adicionar ou atualizar pacotes.
 5. **Nunca usar atalhos que escondem erros** (ex.: ignorar warnings do compilador Solidity) — sempre corrigir a causa raiz.
 
+## Testes
+
+- Hardhat `2.29.0` + `@nomicfoundation/hardhat-toolbox` `6.1.2` (ethers v6 + chai matchers + network-helpers), Solidity `0.8.24` no `hardhat.config.ts`.
+- **Importante:** o toolbox 6.1.2 é para Hardhat 2, e exige as versões antigas (2.x/3.x/0.15.x/1.x) dos plugins `@nomicfoundation/hardhat-*` — as versões "latest" desses plugins hoje em dia são para Hardhat 3 e quebram a resolução de peer deps. Ao atualizar, sempre checar `npm view @nomicfoundation/hardhat-toolbox@<versão> peerDependencies` antes de atualizar qualquer plugin junto.
+- `contracts/mocks/MockERC20.sol` — ERC-20 mínimo só para testes (mint/approve/transfer/transferFrom), usado para simular depósitos e claims sem depender de um token real.
+- `test/ArcInherit.test.ts` — cobre `createVault` (sucesso + reverts de percentuais/timelock/vault duplicado), `checkIn` (atualização do `lastCheckIn` + revert sem vault) e o fluxo completo de timelock/grace period/claim (revert antes do timelock, revert durante o grace period, claim bem-sucedido, revert de não-herdeiro, revert de claim duplicado). Usa `time.increase()` do `@nomicfoundation/hardhat-network-helpers` para simular a passagem do tempo.
+
 ## Comandos
 
-> **Nota:** este repo ainda não tem framework de testes configurado (sem Foundry/Hardhat). Antes de aplicar a regra 1 numa mudança específica, configurar Foundry (`forge init`) ou Hardhat e escrever os testes de unidade para as invariantes acima (percentuais, timelock/grace period, claim único por herdeiro/token, cancelamento devolvendo todos os tokens).
+```bash
+npm test          # roda a suíte de testes (hardhat test)
+npm run compile   # compila os contratos
+```
