@@ -15,13 +15,17 @@ Vault de herança onchain para tokens ERC-20 na Arc Network. Owner deposita toke
 
 ## Estrutura
 
-- `contracts/ArcInherit.sol` — todo o contrato: `createVault`, `deposit`, `withdraw`, `checkIn`, `updateHeirs`, `cancelVault`, `claimInheritance` + view functions (`getVault`, `getBalances`, `canClaim`, `timeUntilClaim`, `isTimelockExpired`, `hasClaimed`)
+- `contracts/ArcInherit.sol` — todo o contrato: `createVault`, `deposit`, `withdraw`, `checkIn`, `updateHeirs`, `cancelVault`, `claimInheritance` + view functions (`getVault`, `getBalances`, `canClaim`, `timeUntilClaim`, `isTimelockExpired`, `hasClaimed`, `claimSnapshot`, `claimRound`)
 
 ## Invariantes importantes (cuidado ao alterar)
 
 - Percentuais de herdeiros devem somar exatamente 100 (`InvalidPercentages`)
 - `timelockDuration` mínimo 30 dias (`MIN_TIMELOCK`), `gracePeriod` mínimo 7 dias (`MIN_GRACE`)
 - Claim só é possível após `lastCheckIn + timelockDuration + gracePeriod` expirar
+- Share de cada herdeiro = `pct` do `_claimSnapshot[owner][round][token]` (saldo no primeiro claim bem-sucedido daquele token na rodada), limitado ao saldo restante — o pagamento não depende da ordem dos claims. Snapshot `0` significa "ainda sem claim"
+- **Rodadas de claim:** snapshot e `_claimed` são indexados por `_claimRound[owner]`. Um `checkIn` depois de pelo menos um claim bem-sucedido na rodada atual (`_roundHasClaims`) inicia uma nova rodada (`ClaimRoundStarted`) — caso "alarme falso". `checkIn` sem claim prévio não muda a rodada. `hasClaimed`/`claimSnapshot` olham a rodada atual; `claimRound(owner)` expõe o número
+- Herdeiro com `wallet == address(0)` é rejeitado (`ZeroAddressHeir`) em `createVault` e `updateHeirs`
+- **Código-fonte ≠ deploy:** snapshot, rodadas de claim e `ZeroAddressHeir` ainda não estão no contrato deployado em `0xdb78…8818`
 - Contrato é imutável por design — qualquer mudança de lógica exige um novo deploy, não upgrade
 
 ## Regras de trabalho
@@ -39,7 +43,7 @@ Vault de herança onchain para tokens ERC-20 na Arc Network. Owner deposita toke
 - `contracts/mocks/MockERC20.sol` — ERC-20 mínimo só para testes (mint/approve/transfer/transferFrom), usado para simular depósitos e claims sem depender de um token real.
 - `test/ArcInherit.test.ts` — cobre `createVault` (sucesso + reverts de percentuais/timelock/vault duplicado), `checkIn` (atualização do `lastCheckIn` + revert sem vault) e o fluxo completo de timelock/grace period/claim (revert antes do timelock, revert durante o grace period, claim bem-sucedido, revert de não-herdeiro, revert de claim duplicado). Usa `time.increase()` do `@nomicfoundation/hardhat-network-helpers` para simular a passagem do tempo.
 - `contracts/mocks/BlockableERC20.sol` — ERC-20 que pode bloquear endereços (simula a blocklist do USDC).
-- `test/ArcInherit.extended.test.ts` — cenários extras e testes `FINDING:` que documentam limitações do contrato atual (controle total do owner após o prazo, herdeiro duplicado pago uma vez, endereço zero aceito como herdeiro, claims posteriores recebem % do saldo restante, transfer bloqueada reverte e pode ser refeita). Essas limitações estão listadas na seção "Known limits" do README.
+- `test/ArcInherit.extended.test.ts` — cenários extras e testes `FINDING:` que documentam limitações do contrato atual (controle total do owner após o prazo, herdeiro duplicado pago uma vez, transfer bloqueada reverte e pode ser refeita). Essas limitações estão listadas na seção "Known limits" do README. O bloco `claim snapshot` cobre a correção da ordem dos claims: split de 3 herdeiros em todas as 6 ordens, poeira de arredondamento, depósito/saque do owner após o primeiro claim, aumento de % via `updateHeirs`, retry de herdeiro bloqueado e snapshot por token. O bloco `claim rounds` cobre o alarme falso (claim → check-in → depósito → novo prazo → todos recebem % do novo saldo), check-in sem claim prévio não iniciar rodada, um claim por herdeiro por rodada e claim revertido não contar como claim.
 
 ## Comandos
 

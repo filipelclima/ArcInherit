@@ -37,6 +37,7 @@ contract ArcInherit {
     error InvalidGracePeriod();   // must be at least 7 days
     error ZeroAmount();
     error TransferFailed();
+    error ZeroAddressHeir();
 
     // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -68,8 +69,19 @@ contract ArcInherit {
     // owner → token → amount deposited
     mapping(address => mapping(address => uint256)) private _balances;
 
-    // owner → heir → token → claimed
-    mapping(address => mapping(address => mapping(address => bool))) private _claimed;
+    // owner → current claim round. A round is one claim window; checking in after a claim
+    // (a "false alarm") starts a new round so earlier snapshots and claimed flags stop applying.
+    mapping(address => uint256) private _claimRound;
+
+    // owner → whether any claim has succeeded in the current round
+    mapping(address => bool) private _roundHasClaims;
+
+    // owner → round → heir → token → claimed
+    mapping(address => mapping(uint256 => mapping(address => mapping(address => bool)))) private _claimed;
+
+    // owner → round → token → vault balance when the round's first claim succeeded (0 = no claim yet).
+    // Every heir's share is computed from this, so payout does not depend on claim order.
+    mapping(address => mapping(uint256 => mapping(address => uint256))) private _claimSnapshot;
 
     // ─── Events ───────────────────────────────────────────────────────────────
 
@@ -80,6 +92,8 @@ contract ArcInherit {
     event HeirsUpdated(address indexed owner);
     event VaultCancelled(address indexed owner);
     event InheritanceClaimed(address indexed owner, address indexed heir, address indexed token, uint256 amount);
+    event ClaimSnapshotTaken(address indexed owner, address indexed token, uint256 amount);
+    event ClaimRoundStarted(address indexed owner, uint256 round);
 
     // ─── Constants ────────────────────────────────────────────────────────────
 
@@ -124,6 +138,7 @@ contract ArcInherit {
 
         uint256 total = 0;
         for (uint256 i = 0; i < heirs.length; i++) {
+            if (heirs[i].wallet == address(0)) revert ZeroAddressHeir();
             total += heirs[i].percentage;
         }
         if (total != 100) revert InvalidPercentages();
@@ -193,6 +208,9 @@ contract ArcInherit {
     /**
      * @notice Proof-of-life transaction. Resets the timelock countdown.
      *         Owner must call this at least once every timelockDuration seconds.
+     *         If heirs already claimed in the current round (the owner was presumed gone but
+     *         wasn't), a new claim round starts: the next time claims open, every heir gets
+     *         their percentage of the vault's balance at that point.
      */
     function checkIn()
         external
@@ -201,6 +219,12 @@ contract ArcInherit {
     {
         _vaults[msg.sender].lastCheckIn = block.timestamp;
         emit CheckIn(msg.sender, block.timestamp);
+
+        if (_roundHasClaims[msg.sender]) {
+            _roundHasClaims[msg.sender] = false;
+            uint256 round = ++_claimRound[msg.sender];
+            emit ClaimRoundStarted(msg.sender, round);
+        }
     }
 
     /**
@@ -216,6 +240,7 @@ contract ArcInherit {
 
         uint256 total = 0;
         for (uint256 i = 0; i < heirs.length; i++) {
+            if (heirs[i].wallet == address(0)) revert ZeroAddressHeir();
             total += heirs[i].percentage;
         }
         if (total != 100) revert InvalidPercentages();
@@ -263,7 +288,10 @@ contract ArcInherit {
      *   - Caller must be a registered heir of this vault
      *   - Timelock must have expired (lastCheckIn + timelockDuration < now)
      *   - Grace period must have passed (lastCheckIn + timelockDuration + gracePeriod < now)
-     *   - Not already claimed this token
+     *   - Not already claimed this token in the current claim round
+     *
+     * Payout is pct of the vault's token balance when the round's first claim for that token
+     * succeeded (see claimSnapshot), capped at whatever balance is left.
      */
     function claimInheritance(address owner, address token)
         external
@@ -287,13 +315,26 @@ contract ArcInherit {
         }
         if (pct == 0) revert NotAnHeir();
 
-        // Check not already claimed
-        if (_claimed[owner][msg.sender][token]) revert AlreadyClaimed();
-        _claimed[owner][msg.sender][token] = true;
+        // Check not already claimed in this round
+        uint256 round = _claimRound[owner];
+        if (_claimed[owner][round][msg.sender][token]) revert AlreadyClaimed();
+        _claimed[owner][round][msg.sender][token] = true;
+        _roundHasClaims[owner] = true;
 
-        // Calculate and transfer share
-        uint256 total  = _balances[owner][token];
-        uint256 share  = (total * pct) / 100;
+        // Calculate share from the balance at the moment claims opened (snapshotted on the round's
+        // first successful claim), so every heir gets pct of the same total regardless of claim
+        // order. A claim that reverts (e.g. blocked recipient) rolls all of this back with it.
+        uint256 balance  = _balances[owner][token];
+        uint256 snapshot = _claimSnapshot[owner][round][token];
+        if (snapshot == 0) {
+            snapshot = balance;
+            _claimSnapshot[owner][round][token] = snapshot;
+            emit ClaimSnapshotTaken(owner, token, snapshot);
+        }
+        uint256 share = (snapshot * pct) / 100;
+        // The owner can still withdraw or change heirs after claims open, so the remaining
+        // balance may not cover the full share; pay out what is left.
+        if (share > balance) share = balance;
         if (share == 0) revert ZeroAmount();
 
         _balances[owner][token] -= share;
@@ -363,9 +404,26 @@ contract ArcInherit {
     }
 
     /**
-     * @notice Returns whether a specific heir has claimed a specific token.
+     * @notice Returns the vault's current claim round (starts at 0). A new round starts when the
+     *         owner checks in after at least one claim in the current round.
+     */
+    function claimRound(address owner) external view returns (uint256) {
+        return _claimRound[owner];
+    }
+
+    /**
+     * @notice Returns the balance every heir's share of `token` is computed from in the current
+     *         claim round, or 0 if no heir has claimed that token in this round yet.
+     */
+    function claimSnapshot(address owner, address token) external view returns (uint256) {
+        return _claimSnapshot[owner][_claimRound[owner]][token];
+    }
+
+    /**
+     * @notice Returns whether a specific heir has claimed a specific token in the current
+     *         claim round.
      */
     function hasClaimed(address owner, address heir, address token) external view returns (bool) {
-        return _claimed[owner][heir][token];
+        return _claimed[owner][_claimRound[owner]][heir][token];
     }
 }

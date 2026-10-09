@@ -59,6 +59,9 @@ The Solidity contract is still named `ArcInherit` (`contracts/ArcInherit.sol`). 
 - `getVault(owner)`: vault details
 - `getBalances(owner)`: all token balances
 - `hasClaimed(owner, heir, token)`: whether a heir has already claimed a token
+- `claimSnapshot(owner, token)`: the balance every heir's share of `token` is computed from in the current claim round, or 0 before the round's first claim (source only, not in the current deployment; see [Known limits](#known-limits))
+- `claimRound(owner)`: the vault's current claim round, starting at 0 (source only, not in the current deployment)
+- `hasClaimed(owner, heir, token)` in the source refers to the current claim round
 
 ## Development
 
@@ -178,10 +181,19 @@ Notes:
 The `FINDING:` tests in `test/ArcInherit.extended.test.ts` document how the contract behaves today. The contract is immutable, so fixing any of these means deploying a new contract.
 
 - **The owner keeps full control after the deadline.** Once the timelock and grace period have passed and `canClaim()` is true, the owner can still `withdraw`, `updateHeirs` and `cancelVault`. That stays true even after some heirs have claimed, so the owner can take the share of a heir who hasn't claimed yet. Anyone holding the owner's key can do the same.
-- **Later claimers get less than their percentage.** With 2 or more heirs, each heir gets their percentage of the balance *remaining* in the vault when they claim, not of the original deposit. Example: with a 40/60 split of 1000, the first heir gets 400 and the second gets 60% of 600, which is 360 instead of 600. The leftover (240 here) can only be withdrawn by the owner.
 - **Duplicate heirs are paid once.** The same wallet can be listed twice (for example 30% + 70%). `claimInheritance` pays only the first matching entry's percentage, and the rest of that wallet's share can never be claimed.
-- **No zero-address check.** `createVault` and `updateHeirs` accept `0x0000…0000` as a heir wallet. No one can claim that share, so it stays locked in the vault unless the owner withdraws it.
 - **Blocklisted transfers revert and stay retryable.** If the token refuses the transfer (for example a USDC-blocklisted heir), `claimInheritance` reverts with the token's own error, not `TransferFailed`. The claim is not marked as done, so the heir can retry once unblocked, and other heirs can still claim normally in the meantime.
+
+### Fixed in the source, not yet deployed
+
+The contract in this repo fixes two more issues. The Arc Testnet deployment at `0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818` predates the fix and still has both of them.
+
+- **Later claimers got less than their percentage.** In the deployed contract, with 2 or more heirs, each heir gets their percentage of the balance *remaining* in the vault when they claim, not of the original deposit. Example: with a 40/60 split of 1000, the first heir gets 400 and the second gets 60% of 600, which is 360 instead of 600. The leftover (240 here) can only be withdrawn by the owner.
+  **Fix:** the first successful claim of a token snapshots the vault's balance of that token (`claimSnapshot(owner, token)`, event `ClaimSnapshotTaken`). Every heir is paid their percentage of that snapshot, whatever the claim order. Rounding down can leave a few wei of dust, which only the owner can withdraw. If the owner withdraws or raises a heir's percentage after the snapshot, a claim pays at most what is left in the vault.
+  **False alarms start a new claim round.** Snapshots and "already claimed" flags belong to a claim round (`claimRound(owner)`). Suppose heirs claim while the owner is presumed gone, and then the owner calls `checkIn()`. That check-in starts a new round (event `ClaimRoundStarted`) and closes claims again. Once the timelock and grace period pass again, every heir gets their percentage of the vault's balance at that point, including anything deposited in between, so nothing gets stuck. Heirs keep what they claimed in the earlier round. A check-in when nobody has claimed, or after a claim that reverted, doesn't start a new round.
+  **Still a limit:** a deposit made while a round's claims are open, after its snapshot, isn't paid out in that round. It's only distributed if the owner checks in, which starts a new round; otherwise only the owner can withdraw it.
+- **Zero-address heirs were accepted.** The deployed `createVault` and `updateHeirs` accept `0x0000…0000` as a heir wallet, and no one can ever claim that share.
+  **Fix:** both functions now revert with `ZeroAddressHeir`.
 
 ## Built on Arc
 
