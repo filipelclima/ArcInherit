@@ -248,5 +248,67 @@ describe("ArcInherit — extended scenarios", () => {
       expect(balances[0].amount).to.equal(0);
       expect(balances[1].amount).to.equal(0);
     });
+
+    it("FINDING: with 2+ heirs, later claimers get their percentage of the REMAINING balance, not of the original deposit (ArcInherit.sol:295-296) -- the leftover can only be withdrawn by the owner", async () => {
+      const { vault, token, owner, heir1, heir2 } = await deployFixture();
+      const tokenAddr = await token.getAddress();
+      await createVault(vault, owner, [
+        { wallet: heir1.address, percentage: 40 },
+        { wallet: heir2.address, percentage: 60 },
+      ]);
+      await token.connect(owner).approve(await vault.getAddress(), DEPOSIT_AMOUNT);
+      await vault.connect(owner).deposit(tokenAddr, DEPOSIT_AMOUNT);
+      await time.increase(MIN_TIMELOCK + MIN_GRACE + 1);
+
+      // heir1 claims first and gets 40% of the full deposit (400).
+      await vault.connect(heir1).claimInheritance(owner.address, tokenAddr);
+      const heir1Share = (DEPOSIT_AMOUNT * 40n) / 100n;
+      expect(await token.balanceOf(heir1.address)).to.equal(heir1Share);
+
+      // heir2 then gets 60% of the remaining 600 (360), not 60% of 1000 (600).
+      await vault.connect(heir2).claimInheritance(owner.address, tokenAddr);
+      const heir2Share = ((DEPOSIT_AMOUNT - heir1Share) * 60n) / 100n;
+      expect(await token.balanceOf(heir2.address)).to.equal(heir2Share);
+      expect(heir2Share).to.be.lessThan((DEPOSIT_AMOUNT * 60n) / 100n);
+
+      // The leftover (240) stays in the vault: both heirs have already claimed, so only the owner
+      // can get it out.
+      const leftover = DEPOSIT_AMOUNT - heir1Share - heir2Share;
+      expect((await vault.getBalances(owner.address))[0].amount).to.equal(leftover);
+      await expect(
+        vault.connect(heir2).claimInheritance(owner.address, tokenAddr)
+      ).to.be.revertedWithCustomError(vault, "AlreadyClaimed");
+      await vault.connect(owner).withdraw(tokenAddr, leftover);
+      expect(await token.balanceOf(owner.address)).to.equal(leftover);
+    });
+
+    it("FINDING: accepts the zero address as a heir wallet (no zero-address check, ArcInherit.sol:115-143) -- nobody can ever claim that share, so it stays in the vault for the owner only", async () => {
+      const { vault, token, owner, heir1, stranger } = await deployFixture();
+      const tokenAddr = await token.getAddress();
+      await expect(
+        createVault(vault, owner, [
+          { wallet: heir1.address, percentage: 50 },
+          { wallet: ethers.ZeroAddress, percentage: 50 },
+        ])
+      ).to.not.be.reverted;
+      await token.connect(owner).approve(await vault.getAddress(), DEPOSIT_AMOUNT);
+      await vault.connect(owner).deposit(tokenAddr, DEPOSIT_AMOUNT);
+      await time.increase(MIN_TIMELOCK + MIN_GRACE + 1);
+
+      await vault.connect(heir1).claimInheritance(owner.address, tokenAddr);
+      const remaining = DEPOSIT_AMOUNT / 2n;
+
+      // No signer can be msg.sender == address(0), so the zero-address share is unclaimable;
+      // any other caller is simply NotAnHeir.
+      await expect(
+        vault.connect(stranger).claimInheritance(owner.address, tokenAddr)
+      ).to.be.revertedWithCustomError(vault, "NotAnHeir");
+      expect((await vault.getBalances(owner.address))[0].amount).to.equal(remaining);
+
+      // updateHeirs accepts it too.
+      await expect(
+        vault.connect(owner).updateHeirs([{ wallet: ethers.ZeroAddress, percentage: 100 }])
+      ).to.emit(vault, "HeirsUpdated");
+    });
   });
 });
