@@ -6,3 +6,4 @@ coverage/
 coverage.json
 dist/
 .env
+!ignition/deployments/*/artifacts/
