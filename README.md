@@ -25,11 +25,12 @@ The Solidity contract is still named `ArcInherit` (`contracts/ArcInherit.sol`). 
 
 ## Deployed contract
 
-| Network | Address |
-|---|---|
-| Arc Testnet | `0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818` |
+| Version | Network | Address | Status |
+|---|---|---|---|
+| **v2** | Arc Testnet | [`0x31C6962393e002845a647bB22e21c6B219eF7F16`](https://explorer.testnet.arc.io/address/0x31C6962393e002845a647bB22e21c6B219eF7F16#code) | **Current**, source verified |
+| v1 | Arc Testnet | [`0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818`](https://explorer.testnet.arc.io/address/0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818) | Legacy, has the claim-order and zero-address bugs listed in the [v2 changelog](#v2-changelog) |
 
-[View on Blockscout](https://testnet.arcscan.app/address/0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818)
+Both contracts are immutable, so v1 keeps running. Vaults created on v1 stay on v1; they aren't moved to v2. New vaults should use v2.
 
 ## How it works
 
@@ -59,9 +60,10 @@ The Solidity contract is still named `ArcInherit` (`contracts/ArcInherit.sol`). 
 - `getVault(owner)`: vault details
 - `getBalances(owner)`: all token balances
 - `hasClaimed(owner, heir, token)`: whether a heir has already claimed a token
-- `claimSnapshot(owner, token)`: the balance every heir's share of `token` is computed from in the current claim round, or 0 before the round's first claim (source only, not in the current deployment; see [Known limits](#known-limits))
-- `claimRound(owner)`: the vault's current claim round, starting at 0 (source only, not in the current deployment)
-- `hasClaimed(owner, heir, token)` in the source refers to the current claim round
+- `claimSnapshot(owner, token)`: the balance every heir's share of `token` is computed from in the current claim round, or 0 before the round's first claim (v2 only)
+- `claimRound(owner)`: the vault's current claim round, starting at 0 (v2 only)
+
+In v2, `hasClaimed` refers to the current claim round. See the [v2 changelog](#v2-changelog).
 
 ## Development
 
@@ -77,40 +79,26 @@ The tests live in `test/`. They use `contracts/mocks/MockERC20.sol` and `contrac
 
 ### Deploying
 
-The contract has no constructor arguments and no admin, so anyone can deploy their own copy. This repo doesn't include a deploy script yet. One way to deploy is with Hardhat Ignition, which is already installed through `@nomicfoundation/hardhat-toolbox`:
+The contract has no constructor arguments and no admin, so anyone can deploy their own copy. The repo includes everything needed for Arc Testnet:
 
-1. Add Arc Testnet to `hardhat.config.ts`, reading the deployer key from an environment variable (never commit it):
+- **Network:** `arcTestnet` in `hardhat.config.ts` (RPC `https://rpc.testnet.arc.io`, chain ID 5042002). The deployer key is read from the `DEPLOYER_PRIVATE_KEY` environment variable. It is never stored in the repo, and `.env` is gitignored.
+- **Deploy:** the Hardhat Ignition module `ignition/modules/ArcInherit.ts`.
+- **Verify:** the Arc Testnet explorer ([explorer.testnet.arc.io](https://explorer.testnet.arc.io)) runs Blockscout, and `hardhat verify` is set up for it in `hardhat.config.ts`. No API key is needed.
 
-   ```ts
-   networks: {
-     arcTestnet: {
-       url: "https://rpc.testnet.arc.io",
-       chainId: 5042002,
-       accounts: process.env.DEPLOYER_PRIVATE_KEY ? [process.env.DEPLOYER_PRIVATE_KEY] : [],
-     },
-   },
-   ```
+Use a fresh wallet that holds only testnet USDC (Arc's gas token). In PowerShell, the key is set for the current session only:
 
-2. Create `ignition/modules/ArcInherit.ts`:
+```powershell
+$env:DEPLOYER_PRIVATE_KEY = Read-Host "Deployer private key" -MaskInput
+npx hardhat ignition deploy ignition/modules/ArcInherit.ts --network arcTestnet
+npx hardhat verify --network arcTestnet <deployed address>
+Remove-Item Env:DEPLOYER_PRIVATE_KEY
+```
 
-   ```ts
-   import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
-
-   export default buildModule("ArcInheritModule", (m) => {
-     const arcInherit = m.contract("ArcInherit");
-     return { arcInherit };
-   });
-   ```
-
-3. Fund the deployer with testnet USDC (Arc's gas token) and deploy:
-
-   ```bash
-   npx hardhat ignition deploy ignition/modules/ArcInherit.ts --network arcTestnet
-   ```
+Ignition writes the deployment record to `ignition/deployments/chain-5042002/`, including the deployed address in `deployed_addresses.json`.
 
 ## Integrate it in your app
 
-Here is a minimal [viem](https://viem.sh) example against the Arc Testnet deployment. It reads a vault and lets a heir claim. The ABI below covers only the functions used here.
+Here is a minimal [viem](https://viem.sh) example against the v2 deployment on Arc Testnet. It reads a vault and lets a heir claim. The ABI below covers only the functions used here.
 
 ```ts
 import {
@@ -128,10 +116,10 @@ const arcTestnet = defineChain({
   name: "Arc Testnet",
   nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
   rpcUrls: { default: { http: ["https://rpc.testnet.arc.io"] } },
-  blockExplorers: { default: { name: "Arcscan", url: "https://testnet.arcscan.app" } },
+  blockExplorers: { default: { name: "Arc Testnet Explorer", url: "https://explorer.testnet.arc.io" } },
 });
 
-const HEIRLOOM: Address = "0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818";
+const HEIRLOOM: Address = "0x31C6962393e002845a647bB22e21c6B219eF7F16"; // v2
 
 const abi = parseAbi([
   "struct Heir { address wallet; uint8 percentage; }",
@@ -178,27 +166,31 @@ Notes:
 
 > **Testnet only, not audited.**
 
-The `FINDING:` tests in `test/ArcInherit.extended.test.ts` document how the contract behaves today. The contract is immutable, so fixing any of these means deploying a new contract.
+These apply to the current v2 contract. The `FINDING:` tests in `test/ArcInherit.extended.test.ts` document them. The contract is immutable, so fixing any of these means deploying a new contract.
 
 - **The owner keeps full control after the deadline.** Once the timelock and grace period have passed and `canClaim()` is true, the owner can still `withdraw`, `updateHeirs` and `cancelVault`. That stays true even after some heirs have claimed, so the owner can take the share of a heir who hasn't claimed yet. Anyone holding the owner's key can do the same.
 - **Duplicate heirs are paid once.** The same wallet can be listed twice (for example 30% + 70%). `claimInheritance` pays only the first matching entry's percentage, and the rest of that wallet's share can never be claimed.
 - **Blocklisted transfers revert and stay retryable.** If the token refuses the transfer (for example a USDC-blocklisted heir), `claimInheritance` reverts with the token's own error, not `TransferFailed`. The claim is not marked as done, so the heir can retry once unblocked, and other heirs can still claim normally in the meantime.
+- **Deposits while claims are open aren't paid out in that round.** A deposit made after the round's snapshot is only distributed if the owner checks in, which starts a new round. Otherwise only the owner can withdraw it.
+- **Rounding dust stays in the vault.** Shares round down, so a few wei can be left over, and only the owner can withdraw them.
 
-### Fixed in the source, not yet deployed
+## v2 changelog
 
-The contract in this repo fixes two more issues. The Arc Testnet deployment at `0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818` predates the fix and still has both of them.
+v2 (`0x31C6962393e002845a647bB22e21c6B219eF7F16`) fixes two bugs that are still present in v1 (`0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818`):
 
-- **Later claimers got less than their percentage.** In the deployed contract, with 2 or more heirs, each heir gets their percentage of the balance *remaining* in the vault when they claim, not of the original deposit. Example: with a 40/60 split of 1000, the first heir gets 400 and the second gets 60% of 600, which is 360 instead of 600. The leftover (240 here) can only be withdrawn by the owner.
-  **Fix:** the first successful claim of a token snapshots the vault's balance of that token (`claimSnapshot(owner, token)`, event `ClaimSnapshotTaken`). Every heir is paid their percentage of that snapshot, whatever the claim order. Rounding down can leave a few wei of dust, which only the owner can withdraw. If the owner withdraws or raises a heir's percentage after the snapshot, a claim pays at most what is left in the vault.
-  **False alarms start a new claim round.** Snapshots and "already claimed" flags belong to a claim round (`claimRound(owner)`). Suppose heirs claim while the owner is presumed gone, and then the owner calls `checkIn()`. That check-in starts a new round (event `ClaimRoundStarted`) and closes claims again. Once the timelock and grace period pass again, every heir gets their percentage of the vault's balance at that point, including anything deposited in between, so nothing gets stuck. Heirs keep what they claimed in the earlier round. A check-in when nobody has claimed, or after a claim that reverted, doesn't start a new round.
-  **Still a limit:** a deposit made while a round's claims are open, after its snapshot, isn't paid out in that round. It's only distributed if the owner checks in, which starts a new round; otherwise only the owner can withdraw it.
-- **Zero-address heirs were accepted.** The deployed `createVault` and `updateHeirs` accept `0x0000…0000` as a heir wallet, and no one can ever claim that share.
-  **Fix:** both functions now revert with `ZeroAddressHeir`.
+- **Fixed: later claimers got less than their percentage.** In v1, with 2 or more heirs, each heir gets their percentage of the balance *remaining* in the vault when they claim, not of the original deposit. Example: with a 40/60 split of 1000, the first heir gets 400 and the second gets 60% of 600, which is 360 instead of 600. The leftover (240 here) can only be withdrawn by the owner.
+  In v2, the first successful claim of a token takes a snapshot of the vault's balance of that token (`claimSnapshot(owner, token)`, event `ClaimSnapshotTaken`). Every heir is paid their percentage of that snapshot, whatever the claim order. If the owner withdraws or raises a heir's percentage after the snapshot, a claim pays at most what is left in the vault.
+- **Fixed: zero-address heirs were accepted.** v1's `createVault` and `updateHeirs` accept `0x0000…0000` as a heir wallet, and no one can ever claim that share. In v2 both functions revert with `ZeroAddressHeir`.
+
+v2 also adds **claim rounds** for false alarms. Snapshots and "already claimed" flags belong to a claim round (`claimRound(owner)`). Suppose heirs claim while the owner is presumed gone, and then the owner calls `checkIn()`. That check-in starts a new round (event `ClaimRoundStarted`) and closes claims again. Once the timelock and grace period pass again, every heir gets their percentage of the vault's balance at that point, including anything deposited in between, so nothing gets stuck. Heirs keep what they claimed in the earlier round. A check-in when nobody has claimed, or after a claim that reverted, doesn't start a new round.
+
+Frontends need the v2 ABI for the new events (`ClaimSnapshotTaken`, `ClaimRoundStarted`), the new views (`claimSnapshot`, `claimRound`) and the new error (`ZeroAddressHeir`).
 
 ## Built on Arc
 
 - **Chain:** Arc Testnet (Chain ID: 5042002)
-- **Language:** Solidity (`pragma ^0.8.20`). Compiled and tested with 0.8.24 (`hardhat.config.ts`). The Arc Testnet deployment above was compiled with 0.8.34.
+- **Explorer:** [explorer.testnet.arc.io](https://explorer.testnet.arc.io)
+- **Language:** Solidity (`pragma ^0.8.20`). v2 is compiled with 0.8.24 (`hardhat.config.ts`, also used for the tests). v1 was compiled with 0.8.34.
 - **License:** [MIT](LICENSE)
 
 ## Future Roadmap

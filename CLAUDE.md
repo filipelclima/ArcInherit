@@ -5,12 +5,14 @@
 Vault de herança onchain para tokens ERC-20 na Arc Network. Owner deposita tokens e designa herdeiros com percentuais; se parar de fazer check-in (prova de vida), os herdeiros podem reivindicar sua parte após o timelock + grace period expirarem.
 
 - **GitHub:** https://github.com/filipelclima/ArcInherit
-- **Deploy:** Arc Testnet, `0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818` ([Blockscout](https://testnet.arcscan.app/address/0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818))
+- **Deploy atual (v2):** Arc Testnet, `0x31C6962393e002845a647bB22e21c6B219eF7F16` — código verificado ([explorer](https://explorer.testnet.arc.io/address/0x31C6962393e002845a647bB22e21c6B219eF7F16#code)). Fonte idêntica a `contracts/ArcInherit.sol` no commit `0770499`
+- **Legado (v1):** Arc Testnet, `0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818` ([explorer](https://explorer.testnet.arc.io/address/0xdb7875DBfDe3A5C4763C11eF15f972C26E3D8818)) — ainda tem o bug da ordem dos claims e aceita herdeiro `address(0)`; vaults antigos continuam lá
+- **Explorer:** https://explorer.testnet.arc.io (Blockscout; `testnet.arcscan.app` agora redireciona para lá)
 - **Frontend:** https://github.com/filipelclima/arcinherit-app
 
 ## Stack
 
-- Solidity `^0.8.20` (deployado com `0.8.34`)
+- Solidity `^0.8.20` — v2 compilado com `0.8.24` (o mesmo do `hardhat.config.ts`); v1 foi compilado com `0.8.34`
 - Contrato único e imutável (`contracts/ArcInherit.sol`) — sem owner, sem proxy, sem admin functions
 
 ## Estrutura
@@ -25,7 +27,7 @@ Vault de herança onchain para tokens ERC-20 na Arc Network. Owner deposita toke
 - Share de cada herdeiro = `pct` do `_claimSnapshot[owner][round][token]` (saldo no primeiro claim bem-sucedido daquele token na rodada), limitado ao saldo restante — o pagamento não depende da ordem dos claims. Snapshot `0` significa "ainda sem claim"
 - **Rodadas de claim:** snapshot e `_claimed` são indexados por `_claimRound[owner]`. Um `checkIn` depois de pelo menos um claim bem-sucedido na rodada atual (`_roundHasClaims`) inicia uma nova rodada (`ClaimRoundStarted`) — caso "alarme falso". `checkIn` sem claim prévio não muda a rodada. `hasClaimed`/`claimSnapshot` olham a rodada atual; `claimRound(owner)` expõe o número
 - Herdeiro com `wallet == address(0)` é rejeitado (`ZeroAddressHeir`) em `createVault` e `updateHeirs`
-- **Código-fonte ≠ deploy:** snapshot, rodadas de claim e `ZeroAddressHeir` ainda não estão no contrato deployado em `0xdb78…8818`
+- Snapshot, rodadas de claim e `ZeroAddressHeir` estão no v2 (`0x31C6…7F16`), não no v1 legado (`0xdb78…8818`). Qualquer mudança no `.sol` a partir daqui deixa o código-fonte diferente do v2 deployado — registrar isso aqui e no README até o próximo deploy
 - Contrato é imutável por design — qualquer mudança de lógica exige um novo deploy, não upgrade
 
 ## Regras de trabalho
@@ -50,4 +52,19 @@ Vault de herança onchain para tokens ERC-20 na Arc Network. Owner deposita toke
 ```bash
 npm test          # roda a suíte de testes (hardhat test)
 npm run compile   # compila os contratos
+```
+
+## Deploy (Arc Testnet)
+
+- Rede `arcTestnet` no `hardhat.config.ts` (RPC `https://rpc.testnet.arc.io`, chainId `5042002`). Chave do deployer **só** via env var `DEPLOYER_PRIVATE_KEY` — nunca hardcoded, nunca em arquivo commitado (`.env` está no `.gitignore`). Sem a env var a rede fica sem contas, e testes/compile continuam funcionando.
+- Módulo Ignition: `ignition/modules/ArcInherit.ts`. Registros de deploy ficam em `ignition/deployments/chain-5042002/` (commitar — é informação pública).
+- Verificação: Blockscout do explorer da Arc (`https://explorer.testnet.arc.io/api`) via `blockscout.customChains` no config (Etherscan e Sourcify desabilitados, sem API key). Não usar `testnet.arcscan.app` — ele responde com redirect e o POST de verificação recebe HTML.
+- `npx hardhat verify` não precisa da chave privada.
+- Depois de um deploy novo: atualizar o endereço e a versão do compilador aqui e no README, commitar o registro em `ignition/deployments/`, e atualizar endereço/ABI no frontend.
+
+```powershell
+$env:DEPLOYER_PRIVATE_KEY = Read-Host "Deployer private key" -MaskInput
+npx hardhat ignition deploy ignition/modules/ArcInherit.ts --network arcTestnet
+npx hardhat verify --network arcTestnet <endereço>
+Remove-Item Env:DEPLOYER_PRIVATE_KEY
 ```
