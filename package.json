@@ -2,6 +2,7 @@
   "name": "arcinherit-contract",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "test": "hardhat test",
     "compile": "hardhat compile"
